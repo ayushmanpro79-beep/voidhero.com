@@ -932,7 +932,7 @@ footer::before{
     <div class="tagline">// something ancient just woke up inside him //</div>
     <h1 class="site-title" id="logoClick">VOID</h1>
     <div class="title-bar"></div>
-    <p class="site-sub">A serialised novel &nbsp;·&nbsp; by Ayushman Gouda</p>
+    <p class="site-sub">A serialised novel &nbsp;·&nbsp; by Ayushman Gouda, SOUL Productions</p>
     <button class="hero-cta" onclick="scrollToEpisodes()">READ THE STORY ↓</button>
   </div>
 </section>
@@ -1020,15 +1020,27 @@ footer::before{
   </div>
 </div>
 
-<script>
-// ── PASSWORD ──
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
+
+// ── PASSWORD — unchanged Writer Studio access ──
 const STUDIO_PASS = 'void2024';
 
-// ── STORAGE KEY ──
-const STORE_KEY = 'void_episodes';
+// ── VOID SUPABASE SETTINGS ──
+// Create a separate Supabase project for VOID, then paste its values here.
+const SUPABASE_URL = 'https://lreatspirvdvpqscmflt.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxyZWF0c3BpcnZkdnBxc2NtZmx0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcyNjEwMzIsImV4cCI6MjA5MjgzNzAzMn0.fHpde8ghFF5GcfWkAnZZ9WIYoiL7aAptZ-ROIrredl0';
+
+// Keep these names exactly the same while creating Supabase bucket/table.
+const PDF_BUCKET = 'void-pdfs';
+const EPISODES_TABLE = 'void_episodes';
+
+const SUPABASE_READY = SUPABASE_URL.startsWith('https://') && SUPABASE_ANON_KEY.length > 40;
+const supabase = SUPABASE_READY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 // ── Episodes in memory ──
 let episodes = [];
+let currentPdfFile = null;
 
 // ──────────────────────────────────────────────
 // ROTATING QUOTES
@@ -1055,7 +1067,7 @@ const QUOTES = [
     attr: "— Rahu & Aarush, Episode 10"
   },
   {
-    text: "\"Sometimes, they unknowingly raise gods.\"",
+    text: "\"Sometimes, they unknowingly raise legends.\"",
     attr: "— Void, Episode 1 · Closing"
   }
 ];
@@ -1091,28 +1103,46 @@ function autoAdvanceQuote(){
   goToQuote((currentQuote + 1) % QUOTES.length);
 }
 
-buildDots();
-quoteInterval = setInterval(autoAdvanceQuote, 6000);
+// ──────────────────────────────────────────────
+// LOAD episodes from Supabase
+// ──────────────────────────────────────────────
+async function loadEpisodes(){
+  if(!SUPABASE_READY){
+    episodes = [];
+    renderPublic();
+    renderManage();
+    showSetupNotice();
+    return;
+  }
 
-// ──────────────────────────────────────────────
-// LOAD from localStorage on page start
-// ──────────────────────────────────────────────
-function loadEpisodes(){
-  try{
-    const raw = localStorage.getItem(STORE_KEY);
-    if(raw) episodes = JSON.parse(raw);
-  }catch(e){ episodes = []; }
+  const { data, error } = await supabase
+    .from(EPISODES_TABLE)
+    .select('id,num,title,part,pdf_path,created_at')
+    .order('num', { ascending:true });
+
+  if(error){
+    console.error(error);
+    episodes = [];
+    renderPublic();
+    renderManage();
+    const msg = document.getElementById('formMsg');
+    if(msg){
+      msg.style.color='var(--red-accent)';
+      msg.textContent='[ Supabase load failed — check table name / policies ]';
+    }
+    return;
+  }
+
+  episodes = data || [];
   renderPublic();
   renderManage();
 }
 
-function saveToStore(){
-  const meta = episodes.map(e=>({num:e.num,title:e.title,part:e.part,pdfData:e.pdfData}));
-  try{
-    localStorage.setItem(STORE_KEY, JSON.stringify(meta));
-    return true;
-  }catch(e){
-    return false;
+function showSetupNotice(){
+  const msg = document.getElementById('formMsg');
+  if(msg){
+    msg.style.color='var(--yellow)';
+    msg.textContent='[ Supabase not configured yet — paste VOID project URL and anon key in this file ]';
   }
 }
 
@@ -1125,11 +1155,11 @@ function renderPublic(){
     list.innerHTML = '<div class="ep-empty">[ No episodes published yet ]</div>';
     return;
   }
-  const sorted = [...episodes].sort((a,b)=>a.num-b.num);
 
-  // Group by act/part for dividers
+  const sorted = [...episodes].sort((a,b)=>a.num-b.num);
   let html = '';
   let lastAct = null;
+
   sorted.forEach(ep=>{
     const act = ep.part || '';
     if(act && act !== lastAct){
@@ -1150,23 +1180,18 @@ function renderPublic(){
 }
 
 // ──────────────────────────────────────────────
-// PDF READER
+// PDF READER — Supabase public URL in themed overlay
 // ──────────────────────────────────────────────
-function openReader(num){
+async function openReader(num){
   const ep = episodes.find(e=>e.num===num);
-  if(!ep||!ep.pdfData){ alert('PDF not found.'); return; }
+  if(!ep){ alert('Episode not found.'); return; }
+  if(!SUPABASE_READY || !ep.pdf_path){ alert('PDF not found.'); return; }
+
+  const { data } = supabase.storage.from(PDF_BUCKET).getPublicUrl(ep.pdf_path);
+  if(!data || !data.publicUrl){ alert('PDF URL not found.'); return; }
+
   document.getElementById('readerTitle').textContent = `EP ${String(ep.num).padStart(2,'0')} — ${ep.title.toUpperCase()}`;
-  const frame = document.getElementById('readerFrame');
-  try{
-    const byteStr = atob(ep.pdfData.split(',')[1]);
-    const bytes = new Uint8Array(byteStr.length);
-    for(let i=0;i<byteStr.length;i++) bytes[i]=byteStr.charCodeAt(i);
-    const blob = new Blob([bytes],{type:'application/pdf'});
-    const url = URL.createObjectURL(blob);
-    frame.src = url;
-  }catch(e){
-    frame.src = ep.pdfData;
-  }
+  document.getElementById('readerFrame').src = data.publicUrl;
   document.getElementById('readerOverlay').classList.add('open');
   document.body.style.overflow='hidden';
 }
@@ -1178,7 +1203,7 @@ function closeReader(){
 }
 
 // ──────────────────────────────────────────────
-// STUDIO GATE
+// STUDIO GATE — unchanged behavior: click logo 5 times, then password
 // ──────────────────────────────────────────────
 let logoClicks = 0, logoTimer;
 document.getElementById('logoClick').addEventListener('click',()=>{
@@ -1218,28 +1243,40 @@ function openStudio(){
   renderManage();
   document.getElementById('studioPanel').classList.add('open');
   document.body.style.overflow='hidden';
+  if(!SUPABASE_READY) showSetupNotice();
 }
 
 function exitStudio(){
   document.getElementById('studioPanel').classList.remove('open');
   document.body.style.overflow='';
+  clearEpisodeForm();
+}
+
+function clearEpisodeForm(){
   document.getElementById('epNum').value='';
   document.getElementById('epTitle').value='';
   document.getElementById('epPart').value='';
   document.getElementById('fileName').textContent='';
   document.getElementById('formMsg').textContent='';
-  currentPdfData = null;
+  document.getElementById('pdfInput').value='';
+  currentPdfFile = null;
 }
-
-let currentPdfData = null;
 
 function onFileSelect(input){
   const file = input.files[0];
   if(!file) return;
+
+  if(file.type !== 'application/pdf'){
+    const msg = document.getElementById('formMsg');
+    msg.style.color='var(--red-accent)';
+    msg.textContent='[ Error: PDF files only ]';
+    input.value='';
+    currentPdfFile = null;
+    return;
+  }
+
+  currentPdfFile = file;
   document.getElementById('fileName').textContent = file.name;
-  const reader = new FileReader();
-  reader.onload = e => { currentPdfData = e.target.result; };
-  reader.readAsDataURL(file);
 }
 
 const drop = document.getElementById('fileDrop');
@@ -1247,45 +1284,96 @@ drop.addEventListener('dragenter',()=>drop.classList.add('drag'));
 drop.addEventListener('dragleave',()=>drop.classList.remove('drag'));
 drop.addEventListener('drop',()=>drop.classList.remove('drag'));
 
-function saveEpisode(){
+async function saveEpisode(){
   const num = parseInt(document.getElementById('epNum').value);
   const title = document.getElementById('epTitle').value.trim();
   const part = document.getElementById('epPart').value.trim();
   const msg = document.getElementById('formMsg');
 
+  if(!SUPABASE_READY){ msg.style.color='var(--red-accent)'; msg.textContent='[ Supabase not configured ]'; return; }
   if(!num||num<1){ msg.style.color='var(--red-accent)'; msg.textContent='[ Error: invalid episode number ]'; return; }
   if(!title){ msg.style.color='var(--red-accent)'; msg.textContent='[ Error: title required ]'; return; }
-  if(!currentPdfData){ msg.style.color='var(--red-accent)'; msg.textContent='[ Error: no PDF selected ]'; return; }
+  if(!currentPdfFile){ msg.style.color='var(--red-accent)'; msg.textContent='[ Error: no PDF selected ]'; return; }
 
-  episodes = episodes.filter(e=>e.num!==num);
-  episodes.push({ num, title, part, pdfData: currentPdfData });
+  msg.style.color='var(--yellow)';
+  msg.textContent='[ Uploading PDF to VOID archive... ]';
 
-  const ok = saveToStore();
-  if(!ok){
+  const safeFileName = currentPdfFile.name.replace(/[^a-z0-9._-]/gi,'_').toLowerCase();
+  const filePath = `episodes/ep-${String(num).padStart(2,'0')}-${Date.now()}-${safeFileName}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(PDF_BUCKET)
+    .upload(filePath, currentPdfFile, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: 'application/pdf'
+    });
+
+  if(uploadError){
+    console.error(uploadError);
     msg.style.color='var(--red-accent)';
-    msg.textContent='[ Storage limit reached — PDF too large ]';
-  } else {
-    msg.style.color='var(--yellow)';
-    msg.textContent = `[ Episode ${num} saved successfully ]`;
+    msg.textContent='[ Upload failed — check Storage bucket/policies ]';
+    return;
   }
 
-  renderPublic();
-  renderManage();
+  const existing = episodes.find(e=>e.num===num);
 
+  const { error: dbError } = await supabase
+    .from(EPISODES_TABLE)
+    .upsert({
+      num,
+      title,
+      part,
+      pdf_path: filePath
+    }, { onConflict: 'num' });
+
+  if(dbError){
+    console.error(dbError);
+    msg.style.color='var(--red-accent)';
+    msg.textContent='[ Database save failed — check table/policies ]';
+    return;
+  }
+
+  // Clean up old PDF if an episode number was replaced.
+  if(existing?.pdf_path){
+    await supabase.storage.from(PDF_BUCKET).remove([existing.pdf_path]);
+  }
+
+  msg.style.color='var(--yellow)';
+  msg.textContent = `[ Episode ${String(num).padStart(2,'0')} uploaded successfully ]`;
+
+  await loadEpisodes();
   document.getElementById('epNum').value='';
   document.getElementById('epTitle').value='';
   document.getElementById('epPart').value='';
   document.getElementById('fileName').textContent='';
   document.getElementById('pdfInput').value='';
-  currentPdfData = null;
+  currentPdfFile = null;
 }
 
-function deleteEpisode(num){
+async function deleteEpisode(num){
   if(!confirm(`Delete Episode ${num}?`)) return;
-  episodes = episodes.filter(e=>e.num!==num);
-  saveToStore();
-  renderPublic();
-  renderManage();
+  if(!SUPABASE_READY){ return; }
+
+  const ep = episodes.find(e=>e.num===num);
+
+  const { error: dbError } = await supabase
+    .from(EPISODES_TABLE)
+    .delete()
+    .eq('num', num);
+
+  if(dbError){
+    console.error(dbError);
+    alert('Delete failed. Check Supabase table policies.');
+    return;
+  }
+
+  if(ep?.pdf_path){
+    const { error: storageError } = await supabase.storage.from(PDF_BUCKET).remove([ep.pdf_path]);
+    if(storageError) console.error(storageError);
+  }
+
+  await loadEpisodes();
 }
 
 function renderManage(){
@@ -1316,7 +1404,23 @@ function esc(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// Inline HTML handlers need window bindings because this script is a module.
+Object.assign(window, {
+  goToQuote,
+  openReader,
+  closeReader,
+  checkPw,
+  closeGate,
+  exitStudio,
+  onFileSelect,
+  saveEpisode,
+  deleteEpisode,
+  scrollToEpisodes
+});
+
 // ── INIT ──
+buildDots();
+quoteInterval = setInterval(autoAdvanceQuote, 6000);
 loadEpisodes();
 </script>
 </body>
